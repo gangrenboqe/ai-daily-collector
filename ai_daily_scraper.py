@@ -136,12 +136,16 @@ def extract_entry_info(entry, source_info):
         if not is_ai_related(title, description):
             return None
         
+        # 🔴 这里原来用 source_info['trust'] / ['language'] 直接取键：
+        #    配置里少一个键就抛 KeyError，被下面的 except 吞掉 -> 返回 None
+        #    -> **整份日报静默变成空报告**，还不报错。
+        #    改用 .get() + 默认值：缺字段只降级这一个字段，不牺牲整条。
         return {
             'title': title.strip(),
-            'source': source_info['name'],
+            'source': source_info.get('name', 'Unknown'),
             'url': link,
-            'trust': source_info['trust'],
-            'language': source_info['language'],
+            'trust': source_info.get('trust', 'unknown'),
+            'language': source_info.get('language', 'unknown'),
             'pub_date': pub_date.strftime('%Y-%m-%d %H:%M') if pub_date else "未知",
             'summary': description.strip() if description.strip() else "无摘要"
         }
