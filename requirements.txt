@@ -1,2 +1,2 @@
-feedparser>=6.0.0
-requests>=2.31.0
+# v2 起本文件不再需要任何第三方依赖（只用 Python 标准库）。
+# v1 曾依赖 feedparser>=6.0.0 与 requests>=2.31.0，2026-10-29 已用标准库重写，见 README「依赖」节。

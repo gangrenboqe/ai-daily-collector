@@ -1,346 +1,335 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-AI每日前沿信息抓取脚本（Python版本）
-抓取多个RSS源，筛选AI相关内容
+AI 资讯采集器（v2 · 零第三方依赖）
+
+抓多个 RSS/Atom 源，按关键词筛 AI 相关内容，输出 Markdown 素材清单。
+
+v2 与 v1 的区别（2026-10-29 实测重写）：
+1. **零依赖**：不再用 feedparser，改用标准库 xml.etree + 正则兜底
+   （v1 需要 pip install feedparser，clone 下来不装就 ModuleNotFoundError）
+2. **源清单按实测重排**：v1 的 10 个源里 5 个已失效/反爬
+   - OpenAI 博客 RSS 迁到 /news/rss.xml（旧的 /blog/rss.xml 返回内容不全）
+   - Anthropic 已无公开 RSS（三个地址都 404）→ 移出清单
+   - 机器之心 / 36氪 返回反爬 HTML 而非 XML → 移出清单
+   - arXiv 证书链在本机校验失败 → 单独关校验（只影响这一个源）
+3. **单源失败不拖垮整轮**：记进 source_status，其它源照跑
+4. **时效过滤**：只要窗口内（默认 48h）的条目，避免把旧闻当新闻
+5. **诚实输出**：哪些源成功/失败、各拿几条，全部写进产出，不静默跳过
+
+用法：
+    python ai_daily_scraper.py                      # 写到脚本同目录 daily/YYYY-MM-DD-ai.md
+    python ai_daily_scraper.py out.md               # 指定输出路径
+    AI_DAILY_OUT=out.md python ai_daily_scraper.py  # 环境变量指定
+    python ai_daily_scraper.py --hours 24           # 改时效窗口
+    python ai_daily_scraper.py --print              # 只打印不写文件
+
+退出码：0 = 有命中；2 = 一个都没命中；1 = 参数/IO 出错
 """
 
-import feedparser
-import requests
-from datetime import datetime, timedelta
-import re
-from urllib.parse import urlparse
-import json
+import argparse
+import email.utils
+from http.client import IncompleteRead
+import html
 import os
+import re
+import ssl
 import sys
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-def fetch_rss_feed(url, timeout=15):
-    """抓取并解析RSS源"""
-    try:
-        # 设置User-Agent和接受头
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/rss+xml, application/xml, text/xml, application/atom+xml, */*',
-            'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
-        }
-        
-        # 尝试使用feedparser直接解析
-        print(f"  尝试直接解析: {url}")
-        feed = feedparser.parse(url, request_headers=headers, timeout=timeout)
-        
-        if feed.bozo:
-            print(f"  解析失败: {feed.bozo_exception}")
-            # 使用requests下载后解析
-            try:
-                print(f"  尝试下载后解析...")
-                response = requests.get(url, headers=headers, timeout=timeout, verify=True)
-                response.raise_for_status()
-                feed = feedparser.parse(response.content)
-                
-                if feed.bozo:
-                    print(f"  下载后解析仍失败")
-                    return None
-                else:
-                    print(f"  ✓ 下载解析成功")
-            except Exception as e:
-                print(f"  下载失败: {e}")
-                # 尝试不使用SSL验证
-                try:
-                    print(f"  尝试忽略SSL验证...")
-                    response = requests.get(url, headers=headers, timeout=timeout, verify=False)
-                    response.raise_for_status()
-                    feed = feedparser.parse(response.content)
-                    print(f"  ✓ 忽略SSL验证后成功")
-                except Exception as e2:
-                    print(f"  ✗ 所有方法都失败: {e2}")
-                    return None
-        
-        return feed
-        
-    except Exception as e:
-        print(f"抓取失败 {url}: {e}")
-        return None
+# ---------------------------------------------------------------------------
+# 源清单（2026-10-29 逐个实测；verify_nossl = 需要关闭证书校验）
+# trust 只作下游筛选的参考，不是自动判定
+# ---------------------------------------------------------------------------
+FEEDS = [
+    # cap = 单源最多留几条（实测：arXiv 24h 内 244 条，不设上限会把日报淹成论文列表）
+    {"name": "OpenAI",      "url": "https://openai.com/news/rss.xml",      "lang": "en", "trust": "高",   "verify_nossl": False, "cap": 20},
+    {"name": "DeepMind",    "url": "https://deepmind.google/blog/rss.xml", "lang": "en", "trust": "高",   "verify_nossl": False, "cap": 20},
+    {"name": "TechCrunch",  "url": "https://techcrunch.com/feed/",         "lang": "en", "trust": "中高", "verify_nossl": False, "cap": 20},
+    {"name": "Hacker News", "url": "https://news.ycombinator.com/rss",     "lang": "en", "trust": "中",   "verify_nossl": False, "cap": 20},
+    {"name": "arXiv cs.AI", "url": "https://arxiv.org/rss/cs.AI",          "lang": "en", "trust": "中高", "verify_nossl": True,  "cap": 15},
+    {"name": "量子位",       "url": "https://www.qbitai.com/feed",          "lang": "zh", "trust": "中高", "verify_nossl": False, "cap": 15},
+]
 
-def is_ai_related(title, description):
-    """检查内容是否与AI相关"""
-    ai_keywords = [
-        # 英文关键词
-        "AI", "artificial intelligence", "machine learning", "deep learning",
-        "model", "LLM", "GPT", "transformer", "neural network", "NLP",
-        "natural language processing", "computer vision", "CV", "reinforcement learning",
-        "generative AI", "AIGC", "algorithm", "training", "inference", "deployment",
-        "OpenAI", "Anthropic", "Google", "Meta", "Microsoft", "framework",
-        "policy", "regulation", "ethics", "security", "evaluation", "benchmark",
-        
-        # 中文关键词
-        "人工智能", "机器学习", "深度学习", "模型", "大模型",
-        "自然语言处理", "计算机视觉", "强化学习", "生成式AI", "算法",
-        "训练", "推理", "部署", "工具", "框架", "政策", "监管", "安全"
-    ]
-    
-    text_to_check = f"{title} {description}".lower()
-    
-    for keyword in ai_keywords:
-        if keyword.lower() in text_to_check:
-            return True
-    
-    # 检查arxiv的特定分类
-    if "arxiv" in text_to_check and any(kw in text_to_check for kw in ["cs.ai", "cs.cl", "ai", "nlp"]):
-        return True
-        
-    return False
+# 已知不可用（留档，免得下一个人再试一遍）
+KNOWN_DEAD = [
+    ("Anthropic", "无公开 RSS：/rss.xml、/news/feed.xml、/engineering/rss.xml 全部 404"),
+    ("机器之心",   "https://www.jiqizhixin.com/rss 返回 text/html 反爬页（约 3.4KB），不是 XML"),
+    ("36氪 AI",   "https://36kr.com/information/AI/feed 返回非法 XML（反爬页）"),
+]
 
-def extract_entry_info(entry, source_info):
-    """从RSS条目中提取信息"""
-    try:
-        # 提取发布日期
-        pub_date = None
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-            pub_date = datetime(*entry.published_parsed[:6])
-        elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-            pub_date = datetime(*entry.updated_parsed[:6])
-        
-        # 检查是否在最近24小时内
-        if pub_date:
-            time_delta = datetime.now() - pub_date
-            if time_delta.days > 1 or (time_delta.days == 1 and time_delta.seconds > 0):
-                return None
-        
-        # 提取标题
-        title = entry.title if hasattr(entry, 'title') else "无标题"
-        
-        # 提取链接
-        link = ""
-        if hasattr(entry, 'link'):
-            link = entry.link
-        elif hasattr(entry, 'links') and entry.links:
-            link = entry.links[0].href
-        elif hasattr(entry, 'id'):
-            link = entry.id
-        
-        # 提取描述
-        description = ""
-        if hasattr(entry, 'summary'):
-            description = entry.summary
-        elif hasattr(entry, 'description'):
-            description = entry.description
-        
-        # 清理HTML标签
-        description = re.sub(r'<[^>]+>', '', description)
-        
-        # 截断描述
-        if len(description) > 200:
-            description = description[:200] + "..."
-        
-        # 检查是否为AI相关内容
-        if not is_ai_related(title, description):
-            return None
-        
-        # 🔴 这里原来用 source_info['trust'] / ['language'] 直接取键：
-        #    配置里少一个键就抛 KeyError，被下面的 except 吞掉 -> 返回 None
-        #    -> **整份日报静默变成空报告**，还不报错。
-        #    改用 .get() + 默认值：缺字段只降级这一个字段，不牺牲整条。
-        return {
-            'title': title.strip(),
-            'source': source_info.get('name', 'Unknown'),
-            'url': link,
-            'trust': source_info.get('trust', 'unknown'),
-            'language': source_info.get('language', 'unknown'),
-            'pub_date': pub_date.strftime('%Y-%m-%d %H:%M') if pub_date else "未知",
-            'summary': description.strip() if description.strip() else "无摘要"
-        }
-        
-    except Exception as e:
-        print(f"解析条目失败: {e}")
-        return None
+KEYWORDS = [
+    # 模型 / 能力
+    "llm", "large language model", "gpt", "claude", "gemini", "deepseek", "qwen", "llama",
+    "大模型", "模型", "多模态", "推理", "agent", "智能体", "rag", "embedding", "fine-tun",
+    # 工程 / 部署
+    "inference", "训练", "微调", "量化", "部署", "开源", "benchmark", "评测",
+    # 产业
+    "openai", "anthropic", "google", "nvidia", "英伟达", "融资", "funding", "acquire",
+    "acquisition", "ipo", "开源",
+    # 与本地项目直接相关的方向
+    "memory", "记忆", "context", "上下文", "tool", "工具调用", "function call",
+]
 
-def scrape_all_sources():
-    """抓取所有配置的源"""
-    # 配置源列表
-    sources = [
-        # 中文源
-        {"name": "量子位", "url": "https://www.qbitai.com/feed", "language": "zh", "trust": "中高"},
-        {"name": "机器之心", "url": "https://www.jiqizhixin.com/rss", "language": "zh", "trust": "中高"},
-        {"name": "36氪 AI", "url": "https://36kr.com/information/AI/feed", "language": "zh", "trust": "中高"},
-        
-        # 英文源
-        {"name": "TechCrunch AI", "url": "https://techcrunch.com/feed/", "language": "en", "trust": "中高"},
-        {"name": "Hacker News", "url": "https://news.ycombinator.com/rss", "language": "en", "trust": "中"},
-        {"name": "arXiv cs.AI", "url": "https://arxiv.org/rss/cs.AI", "language": "en", "trust": "中高"},
-        {"name": "arXiv cs.CL", "url": "https://arxiv.org/rss/cs.CL", "language": "en", "trust": "中高"},
-        
-        # 官方博客
-        {"name": "OpenAI", "url": "https://openai.com/blog/rss.xml", "language": "en", "trust": "高"},
-        {"name": "Anthropic", "url": "https://www.anthropic.com/news/rss.xml", "language": "en", "trust": "高"},
-        {"name": "DeepMind", "url": "https://deepmind.google/blog/rss.xml", "language": "en", "trust": "高"}
-    ]
-    
-    all_entries = []
-    
-    print(f"开始抓取AI前沿信息...")
-    print(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"配置源数量: {len(sources)}")
-    print("-" * 50)
-    
-    for source in sources:
-        print(f"正在抓取: {source['name']}...")
-        
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ai-daily-collector/2.0"
+
+
+# ---------------------------------------------------------------------------
+# 抓取
+# ---------------------------------------------------------------------------
+def _openers(nossl: bool):
+    """按优先级返回 opener：先走系统代理（外网需要），再直连。"""
+    if nossl:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        handler = urllib.request.HTTPSHandler(context=ctx)
+        return [urllib.request.build_opener(handler),
+                urllib.request.build_opener(urllib.request.ProxyHandler({}), handler)]
+    return [urllib.request.build_opener(),
+            urllib.request.build_opener(urllib.request.ProxyHandler({}))]
+
+
+def fetch(url: str, timeout: int = 20, nossl: bool = False):
+    """抓一个源，返回 (text, content_type)。代理失败自动改直连。"""
+    last = None
+    for opener in _openers(nossl):
         try:
-            feed = fetch_rss_feed(source['url'])
-            
-            if not feed or not hasattr(feed, 'entries'):
-                print(f"  ⚠ 未找到有效条目")
-                continue
-            
-            for entry in feed.entries[:10]:  # 每个源最多取10条最新
-                entry_info = extract_entry_info(entry, source)
-                if entry_info:
-                    all_entries.append(entry_info)
-                    print(f"  ✓ {entry_info['title'][:50]}...")
-            
-        except Exception as e:
-            print(f"  ✗ 抓取失败: {e}")
-    
-    print("-" * 50)
-    print(f"完成！共收集 {len(all_entries)} 条AI相关内容")
-    
-    return all_entries
+            req = urllib.request.Request(url, headers={
+                "User-Agent": UA,
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            })
+            with opener.open(req, timeout=timeout) as resp:
+                try:
+                    raw = resp.read()
+                except IncompleteRead as exc:
+                    # 部分读取：连接被掐断但已拿到大部分字节时，用已读部分继续解析
+                    # （实测：openai.com/news/rss.xml 会返回 800KB 后被断开，整源判失败太浪费）
+                    raw = exc.partial or b""
+                    if len(raw) < 20000:
+                        raise
+                return raw.decode("utf-8", "ignore"), resp.headers.get("Content-Type", "?")
+        except Exception as exc:          # noqa: BLE001 — 单源失败不能让整轮挂掉
+            last = exc
+    raise RuntimeError(f"{type(last).__name__}: {last}")
 
-def generate_markdown(entries):
-    """生成Markdown报告"""
-    date_str = datetime.now().strftime('%Y-%m-%d')
-    
-    # 按源分组并排序
-    sources_dict = {}
-    for entry in entries:
-        source = entry['source']
-        if source not in sources_dict:
-            sources_dict[source] = []
-        sources_dict[source].append(entry)
-    
-    # 按可信度排序
-    trust_order = {"高": 3, "中高": 2, "中": 1}
-    entries.sort(key=lambda x: trust_order.get(x['trust'], 0), reverse=True)
-    
-    # 生成Markdown内容
-    md_content = f"""# AI前沿信息日报 ({date_str})
 
-**数据采集时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-**抓取源数**: {len(sources_dict)}
-**总条目数**: {len(entries)}
+# ---------------------------------------------------------------------------
+# 解析：严格 XML 优先，失败走正则兜底
+# ---------------------------------------------------------------------------
+def _tag(elem) -> str:
+    return elem.tag.split("}")[-1].lower() if isinstance(elem.tag, str) else ""
 
----
 
-"""
-    
-    # 按源分组展示
-    for source_name, source_entries in sources_dict.items():
-        # 获取该源的可信度
-        trust_level = source_entries[0]['trust'] if source_entries else "未知"
-        
-        md_content += f"### 🔗 {source_name} (可信度: {trust_level})\n\n"
-        
-        for entry in source_entries:
-            md_content += f"""- **{entry['title']}**  
-  来源: {entry['source']} · 语言: {entry['language']} · 发布时间: {entry['pub_date']}  
-  链接: [{entry['url']}]({entry['url']})  
-  摘要: {entry['summary']}
+def _text(elem, *names):
+    for child in elem:
+        if _tag(child) in names:
+            return (child.text or "").strip()
+    return ""
 
-"""
-    
-    # 统计信息
-    md_content += """---
 
-## 📊 统计信息
+def _link(elem) -> str:
+    for child in elem:
+        if _tag(child) == "link":
+            href = child.get("href")
+            if href:
+                return href.strip()
+            if child.text and child.text.strip():
+                return child.text.strip()
+    guid = _text(elem, "guid", "id")
+    return guid if guid.startswith("http") else ""
 
-| 来源 | 条目数 | 可信度 |
-|------|--------|--------|
-"""
-    
-    for source_name, source_entries in sources_dict.items():
-        trust_level = source_entries[0]['trust'] if source_entries else "未知"
-        md_content += f"| {source_name} | {len(source_entries)} | {trust_level} |\n"
-    
-    md_content += f"| **总计** | **{len(entries)}** | - |\n\n"
-    
-    # 可信度分布
-    trust_dist = {}
-    for entry in entries:
-        trust = entry['trust']
-        trust_dist[trust] = trust_dist.get(trust, 0) + 1
-    
-    md_content += "### 📈 可信度分布\n"
-    for trust, count in sorted(trust_dist.items(), key=lambda x: x[1], reverse=True):
-        md_content += f"- {trust}: {count} 条\n"
-    
-    md_content += f"""
 
----
+def _parse_date(elem):
+    """RSS 的 pubDate 是 RFC822，Atom 的 updated/published 是 ISO8601。"""
+    raw = _text(elem, "pubdate", "published", "updated", "date")
+    if not raw:
+        return None
+    return _parse_date_str(raw)
 
-> 自动化采集于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-> 数据仅供参考，请以原文为准
-"""
-    
-    return md_content
+
+def _parse_date_str(raw: str):
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+        if dt:
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:                     # noqa: BLE001 — 格式不认识就往下试
+        pass
+    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(raw.replace(".000", ""), fmt)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _clean(text: str, limit: int = 300) -> str:
+    text = re.sub(r"<[^>]+>", " ", text or "")
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def parse_feed(raw: str):
+    """返回 [{'title','link','summary','published'}]；严格解析失败时正则兜底。"""
+    items = []
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        root = None
+
+    if root is not None:
+        for elem in root.iter():
+            if _tag(elem) in ("item", "entry"):
+                items.append({
+                    "title": _clean(_text(elem, "title"), 200),
+                    "link": _link(elem),
+                    "summary": _clean(_text(elem, "description", "summary", "content"), 300),
+                    "published": _parse_date(elem),
+                })
+        if items:
+            return items
+
+    # 兜底：内容不是合法 XML（反爬页 / 截断 / 非法字符）
+    for block in re.findall(r"<(?:item|entry)\b.*?</(?:item|entry)>", raw, re.S | re.I):
+        title = re.search(r"<title[^>]*>(.*?)</title>", block, re.S | re.I)
+        link = (re.search(r"<link[^>]*href=[\"']([^\"']+)[\"']", block, re.I)
+                or re.search(r"<link[^>]*>(.*?)</link>", block, re.S | re.I))
+        desc = re.search(r"<(?:description|summary|content)[^>]*>(.*?)</(?:description|summary|content)>",
+                         block, re.S | re.I)
+        date = re.search(r"<(?:pubDate|published|updated|date)[^>]*>(.*?)</", block, re.S | re.I)
+        items.append({
+            "title": _clean(title.group(1) if title else "", 200),
+            "link": (link.group(1).strip() if link else ""),
+            "summary": _clean(desc.group(1) if desc else "", 300),
+            "published": _parse_date_str(date.group(1) if date else ""),
+        })
+    return items
+
+
+# ---------------------------------------------------------------------------
+# 筛选与汇总
+# ---------------------------------------------------------------------------
+def is_ai_related(title: str, summary: str = "") -> bool:
+    hay = (title + " " + summary).lower()
+    return any(k in hay for k in KEYWORDS)
+
+
+def collect(hours: int = 48):
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    entries, status = [], []
+
+    for feed in FEEDS:
+        try:
+            raw, ctype = fetch(feed["url"], nossl=feed["verify_nossl"])
+            items = parse_feed(raw)
+            cap = feed.get("cap", 25)
+            kept = 0
+            for it in items:
+                if not it["title"]:
+                    continue
+                pub = it["published"]
+                if pub and pub < cutoff:
+                    continue
+                if not is_ai_related(it["title"], it["summary"]):
+                    continue
+                if kept >= cap:           # 单源限量，防止一个源淹没整份清单
+                    continue
+                entries.append({
+                    "source": feed["name"], "lang": feed["lang"], "trust": feed["trust"],
+                    "title": it["title"], "link": it["link"], "summary": it["summary"],
+                    "published": pub.astimezone().strftime("%m-%d %H:%M") if pub else "时间未知",
+                    "_ts": pub or datetime.now(timezone.utc),
+                })
+                kept += 1
+            status.append({"name": feed["name"], "ok": True, "total": len(items),
+                           "kept": kept, "cap": cap, "ctype": ctype})
+        except Exception as exc:          # noqa: BLE001
+            status.append({"name": feed["name"], "ok": False, "total": 0, "kept": 0,
+                           "error": str(exc)[:160]})
+
+    entries.sort(key=lambda e: e["_ts"], reverse=True)
+    return entries, status
+
+
+# ---------------------------------------------------------------------------
+# 输出
+# ---------------------------------------------------------------------------
+def render(entries, status, hours: int) -> str:
+    now = datetime.now()
+    lines = [
+        f"# AI 资讯原始素材 · {now:%Y-%m-%d}",
+        "",
+        f"> 采集时间 {now:%H:%M} ｜ 时效窗口 最近 {hours} 小时 ｜ 命中 {len(entries)} 条",
+        "> 本文件是**原材料清单**，只按时间倒序，不做判断、不做重要性排序；筛选与总结由下游完成。",
+        "",
+        "## 源状态",
+        "",
+        "| 源 | 结果 | 抓到条目 | 窗口内命中 |",
+        "|---|---|---|---|",
+    ]
+    for s in status:
+        if s["ok"]:
+            capped = "（已达上限）" if s["kept"] >= s.get("cap", 99) else ""
+            lines.append(f"| {s['name']} | ✅ | {s['total']} | {s['kept']}{capped} |")
+        else:
+            lines.append(f"| {s['name']} | ❌ {s.get('error', '')[:70]} | - | - |")
+
+    lines += ["", "## 条目（按发布时间倒序）", ""]
+    if not entries:
+        lines.append("_窗口内没有命中任何条目（源今日可能无更新，或关键词过严）。_")
+    for e in entries:
+        lines.append(f"### {e['title']}")
+        lines.append(f"- 来源：{e['source']}（{e['lang']}，可信度 {e['trust']}）｜发布：{e['published']}")
+        if e["link"]:
+            lines.append(f"- 链接：{e['link']}")
+        if e["summary"]:
+            lines.append(f"- 摘要：{e['summary']}")
+        lines.append("")
+
+    lines += ["---", "", "## 已知不可用的源（别再试）", ""]
+    for name, why in KNOWN_DEAD:
+        lines.append(f"- **{name}**：{why}")
+
+    return "\n".join(lines)
+
 
 def main():
-    """主函数"""
-    try:
-        # 输出路径：命令行参数优先，其次环境变量，最后默认落在脚本同级的 daily/ 目录
-        # （不再依赖任何写死的绝对路径，clone 到任何机器都能跑）
-        if len(sys.argv) > 1:
-            output_path = sys.argv[1]
-        elif os.environ.get("AI_DAILY_OUT"):
-            output_path = os.environ["AI_DAILY_OUT"]
-        else:
-            date_str = datetime.now().strftime('%Y-%m-%d')
-            default_dir = Path(__file__).resolve().parent / "daily"
-            output_path = str(default_dir / f"{date_str}-ai.md")
+    ap = argparse.ArgumentParser(description="AI 资讯采集（零依赖）")
+    ap.add_argument("output", nargs="?", help="输出路径；省略则写 daily/YYYY-MM-DD-ai.md")
+    ap.add_argument("--hours", type=int, default=48, help="时效窗口小时数，默认 48")
+    ap.add_argument("--print", dest="to_stdout", action="store_true", help="只打印，不写文件")
+    args = ap.parse_args()
 
-        # 确保目录存在
-        output_dir = os.path.dirname(output_path)
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # 抓取数据
-        entries = scrape_all_sources()
-        
-        if entries:
-            # 生成Markdown
-            md_content = generate_markdown(entries)
-            
-            # 写入文件
-            if os.path.exists(output_path):
-                # 追加模式
-                with open(output_path, 'r', encoding='utf-8') as f:
-                    existing_content = f.read()
-                
-                # 查找并替换旧内容或追加新内容
-                new_content = existing_content + "\n\n---\n\n" + md_content
-                
-                # 写入文件时添加UTF-8 BOM
-                with open(output_path, 'w', encoding='utf-8-sig') as f:
-                    f.write(new_content)
-            else:
-                # 写入文件时添加UTF-8 BOM
-                with open(output_path, 'w', encoding='utf-8-sig') as f:
-                    f.write(md_content)
-            
-            print(f"报告已保存到: {output_path}")
-            
-            # 返回成功信息
-            return {
-                'status': 'success',
-                'entries_count': len(entries),
-                'output_path': output_path
-            }
-        else:
-            print("未找到AI相关内容")
-            return {'status': 'no_content'}
-            
-    except Exception as e:
-        print(f"脚本执行失败: {e}")
-        return {'status': 'error', 'message': str(e)}
+    entries, status = collect(hours=args.hours)
+    md = render(entries, status, args.hours)
+
+    ok = sum(1 for s in status if s["ok"])
+    print(f"源：{ok}/{len(status)} 可用 ｜ 命中 {len(entries)} 条", file=sys.stderr)
+    for s in status:
+        if not s["ok"]:
+            print(f"  ❌ {s['name']}: {s.get('error', '')[:90]}", file=sys.stderr)
+
+    if args.to_stdout:
+        print(md)
+        return 0 if entries else 2
+
+    out = args.output or os.environ.get("AI_DAILY_OUT")
+    if not out:
+        out = str(Path(__file__).resolve().parent / "daily" / f"{datetime.now():%Y-%m-%d}-ai.md")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(md)
+    print(f"已写入 {out}", file=sys.stderr)
+    return 0 if entries else 2
+
 
 if __name__ == "__main__":
-    result = main()
-    sys.exit(0 if result['status'] == 'success' else 1)
+    sys.exit(main())
