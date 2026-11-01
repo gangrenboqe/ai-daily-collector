@@ -31,6 +31,7 @@ import argparse
 import email.utils
 from http.client import IncompleteRead
 import html
+import json
 import os
 import re
 import ssl
@@ -49,7 +50,8 @@ FEEDS = [
     {"name": "OpenAI",      "url": "https://openai.com/news/rss.xml",      "lang": "en", "trust": "高",   "verify_nossl": False, "cap": 20},
     {"name": "DeepMind",    "url": "https://deepmind.google/blog/rss.xml", "lang": "en", "trust": "高",   "verify_nossl": False, "cap": 20},
     {"name": "TechCrunch",  "url": "https://techcrunch.com/feed/",         "lang": "en", "trust": "中高", "verify_nossl": False, "cap": 20},
-    {"name": "Hacker News", "url": "https://news.ycombinator.com/rss",     "lang": "en", "trust": "中",   "verify_nossl": False, "cap": 20},
+    # 🔴 2026-11-01：官网 RSS 连续三天超时，改用官方 Algolia API（JSON，稳定）
+    {"name": "Hacker News", "url": "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=40", "lang": "en", "trust": "中", "verify_nossl": False, "cap": 20, "type": "json"},
     {"name": "arXiv cs.AI", "url": "https://arxiv.org/rss/cs.AI",          "lang": "en", "trust": "中高", "verify_nossl": True,  "cap": 15},
     {"name": "量子位",       "url": "https://www.qbitai.com/feed",          "lang": "zh", "trust": "中高", "verify_nossl": False, "cap": 15},
 ]
@@ -214,6 +216,27 @@ def parse_feed(raw: str):
     return items
 
 
+def parse_json_feed(raw: str):
+    """HN Algolia API 的 JSON → 统一的 item 结构。"""
+    out = []
+    try:
+        d = json.loads(raw)
+    except Exception:                     # noqa: BLE001
+        return out
+    for h in d.get("hits", []) or []:
+        title = (h.get("title") or h.get("story_title") or "").strip()
+        if not title:
+            continue
+        link = h.get("url") or ("https://news.ycombinator.com/item?id=" + str(h.get("objectID", "")))
+        out.append({
+            "title": title,
+            "link": link,
+            "summary": "HN %s 分 · %s 评论" % (h.get("points") or 0, h.get("num_comments") or 0),
+            "published": _parse_date_str(h.get("created_at") or ""),
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 筛选与汇总
 # ---------------------------------------------------------------------------
@@ -229,7 +252,7 @@ def collect(hours: int = 48):
     for feed in FEEDS:
         try:
             raw, ctype = fetch(feed["url"], nossl=feed["verify_nossl"])
-            items = parse_feed(raw)
+            items = parse_json_feed(raw) if feed.get("type") == "json" else parse_feed(raw)
             cap = feed.get("cap", 25)
             kept = 0
             for it in items:

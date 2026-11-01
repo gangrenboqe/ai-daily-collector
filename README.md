@@ -120,7 +120,7 @@ clone 到任何目录都能跑，没有写死的绝对路径。
 | OpenAI | en | 高 | RSS 已迁到 `/news/rss.xml`；连接常在 800KB 处被断开，靠部分读取容错 |
 | DeepMind | en | 高 | |
 | TechCrunch | en | 中高 | |
-| Hacker News | en | 中 | 综合性源，靠关键词筛 AI 相关 |
+| Hacker News | en | 中 | **走官方 Algolia API**（`hn.algolia.com/api/v1/search?tags=front_page`）—— 官网 RSS 自 10-30 起连续超时，2026-11-01 换源；API 返回 JSON，脚本已支持 `type: json` 的源 |
 | arXiv cs.AI | en | 中高 | 每日几十到几百条，**单源上限 15 条**，否则会淹没整份清单 |
 | 量子位 | zh | 中高 | 目前唯一稳定的中文源 |
 
