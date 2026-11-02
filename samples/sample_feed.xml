@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  离线演示用合成 RSS 样例（非真实抓取）。
+  8 条里 6 条命中 AI 关键词、2 条不命中——用来同时展示「解析」和「关键词筛选」两个环节。
+-->
+<rss version="2.0">
+  <channel>
+    <title>Sample AI News Feed（合成样例）</title>
+    <link>https://example.com/rss.xml</link>
+    <description>demo 用的合成数据，条目内容为泛化示例</description>
+
+    <item>
+      <title>新版本开源模型发布：上下文窗口扩展至 128K，推理成本下降 40%</title>
+      <link>https://example.com/news/open-model-release</link>
+      <description>开源社区发布新一代大模型，长上下文与量化推理成为本轮升级重点。</description>
+      <pubDate>Mon, 02 Nov 2026 09:30:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>Embedding 模型检索基准刷新：中文召回率首次超过英文基线</title>
+      <link>https://example.com/news/embedding-benchmark</link>
+      <description>向量检索评测更新，中文语料上的召回表现首次反超。</description>
+      <pubDate>Mon, 02 Nov 2026 08:10:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>本地部署指南：单卡跑 7B 推理服务的三种量化方案对比</title>
+      <link>https://example.com/news/local-deploy-7b</link>
+      <description>INT4 / INT8 / GGUF 三种量化在消费级显卡上的吞吐与显存对比。</description>
+      <pubDate>Mon, 02 Nov 2026 07:45:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>某大厂发布 Agent 开发框架 2.0：内置工具调用与多轮规划</title>
+      <link>https://example.com/news/agent-framework-2</link>
+      <description>新框架把工具调用、失败重试与步数上限做成了默认能力。</description>
+      <pubDate>Mon, 02 Nov 2026 06:20:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>大模型 API 价格战延续：多家厂商下调输入 token 单价</title>
+      <link>https://example.com/news/api-price-cut</link>
+      <description>行业价格再次下调，长文本场景成本下降最明显。</description>
+      <pubDate>Mon, 02 Nov 2026 05:05:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>检索增强生成（RAG）在客服场景的落地案例：命中率提升方法拆解</title>
+      <link>https://example.com/news/rag-customer-service</link>
+      <description>从分词、召回排序到答案生成的完整链路复盘。</description>
+      <pubDate>Mon, 02 Nov 2026 04:30:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>本周末城市马拉松交通管制通知</title>
+      <link>https://example.com/news/marathon-traffic</link>
+      <description>与 AI 无关的本地新闻条目，用于演示关键词筛选会把它过滤掉。</description>
+      <pubDate>Mon, 02 Nov 2026 03:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>新餐厅开业：市中心又添一家粤菜馆</title>
+      <link>https://example.com/news/restaurant-opening</link>
+      <description>同样与 AI 无关，筛选后不应出现在日报里。</description>
+      <pubDate>Mon, 02 Nov 2026 02:15:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>

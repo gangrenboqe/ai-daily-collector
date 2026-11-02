@@ -5,6 +5,21 @@
 
 ---
 
+## 三步跑起来（不需要联网、不需要任何 key）
+
+```bash
+git clone https://github.com/gangrenboqe/ai-daily-collector.git
+cd ai-daily-collector
+python demo.py
+# → 离线生成一份日报样例：内置合成数据（8 条）→ 解析 → 关键词筛选（命中 6 / 过滤 2）→ 日报全文
+#   真实运行输出样例见 docs/demo_output.txt
+```
+
+Python 3.9+，零第三方依赖。想跑**真实的联网采集**：`python ai_daily_scraper.py`（输出到 `daily/` 目录）。
+陌生人复验记录见 [docs/STRANGER_REVIEW.md](docs/STRANGER_REVIEW.md)。
+
+---
+
 ## 先说清楚它到什么程度（如实写）
 
 **已验证：1 次完整运行**（采集 + 生成 Markdown 报告 + PowerShell 菜单脚本的注册/立即运行/查看状态流程）。
@@ -28,10 +43,11 @@
 ## 怎么用
 
 ```bash
-pip install -r requirements.txt
-python ai_daily_scraper.py                 # 输出到脚本同级的 daily/ 目录
+python ai_daily_scraper.py                 # 联网抓 10 个 RSS 源，输出到脚本同级的 daily/ 目录
 python ai_daily_scraper.py out/2026-10-10.md   # 指定输出文件
 ```
+
+> 零第三方依赖，克隆下来直接跑，不需要 pip install（v1 的 `requirements.txt` 是遗留说明，见下方「依赖」一节）。
 
 ```powershell
 # 以管理员身份打开 PowerShell
@@ -70,10 +86,11 @@ clone 到任何目录都能跑，没有写死的绝对路径。
 
 1. 修掉缺键吞内容的路径；
 2. 补 **16 项离线测试**（不需要网络，断网也能跑），把"缺键""空数据"这类分支全部固化成用例；
+   v2 零依赖重写（`8b0f1d4`）时部分用例合并，现为 **13 项**；
 3. 接上 CI，让"再变空"这件事**在测试里就暴露，而不是在日报里才被发现**。
 
-16 项现在仍可复跑验证：仓库根目录执行 `python -m unittest discover -s tests`，
-输出 `Ran 16 tests ... OK`。
+13 项现在仍可复跑验证：仓库根目录执行 `python -m unittest discover -s tests`，
+输出 `Ran 13 tests ... OK`（2026-11-02 陌生人复验实跑确认）。
 
 > 本节初稿由 AI 助手从提交历史中整理。按"写的人不审自己"的规矩，
 > 它会先经另一位独立 AI 助手复核，再由设计者推送发布。
