@@ -1,5 +1,7 @@
 # ai-daily-collector —— AI 资讯采集 + Windows 计划任务
 
+[![tests](https://github.com/gangrenboqe/ai-daily-collector/actions/workflows/test.yml/badge.svg)](https://github.com/gangrenboqe/ai-daily-collector/actions/workflows/test.yml)
+
 > 一句话：**抓 6 个 RSS 源做成 AI 日报的原材料清单，用 PowerShell 注册成 Windows 计划任务自动跑；
 > 零第三方依赖（标准库解析），单个源挂掉不影响整轮，还会把「哪个源失败、为什么」原样写进产出。**
 
