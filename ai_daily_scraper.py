@@ -95,7 +95,7 @@ def _openers(nossl: bool):
             urllib.request.build_opener(urllib.request.ProxyHandler({}))]
 
 
-def fetch(url: str, timeout: int = 20, nossl: bool = False):
+def fetch(url: str, timeout: int = 20, nossl: bool = False) -> tuple[str, str]:
     """抓一个源，返回 (text, content_type)。代理失败自动改直连。"""
     last = None
     for opener in _openers(nossl):
@@ -179,7 +179,7 @@ def _clean(text: str, limit: int = 300) -> str:
     return text[:limit]
 
 
-def parse_feed(raw: str):
+def parse_feed(raw: str) -> list[dict]:
     """返回 [{'title','link','summary','published'}]；严格解析失败时正则兜底。"""
     items = []
     try:
@@ -216,7 +216,7 @@ def parse_feed(raw: str):
     return items
 
 
-def parse_json_feed(raw: str):
+def parse_json_feed(raw: str) -> list[dict]:
     """HN Algolia API 的 JSON → 统一的 item 结构。"""
     out = []
     try:
@@ -245,7 +245,7 @@ def is_ai_related(title: str, summary: str = "") -> bool:
     return any(k in hay for k in KEYWORDS)
 
 
-def collect(hours: int = 48):
+def collect(hours: int = 48) -> tuple[list[dict], list[dict]]:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     entries, status = [], []
 
@@ -285,7 +285,7 @@ def collect(hours: int = 48):
 # ---------------------------------------------------------------------------
 # 输出
 # ---------------------------------------------------------------------------
-def render(entries, status, hours: int) -> str:
+def render(entries: list[dict], status: list[dict], hours: int) -> str:
     now = datetime.now()
     lines = [
         f"# AI 资讯原始素材 · {now:%Y-%m-%d}",
@@ -324,7 +324,7 @@ def render(entries, status, hours: int) -> str:
     return "\n".join(lines)
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(description="AI 资讯采集（零依赖）")
     ap.add_argument("output", nargs="?", help="输出路径；省略则写 daily/YYYY-MM-DD-ai.md")
     ap.add_argument("--hours", type=int, default=48, help="时效窗口小时数，默认 48")

@@ -91,8 +91,19 @@ clone 到任何目录都能跑，没有写死的绝对路径。
    v2 零依赖重写（`8b0f1d4`）时部分用例合并，现为 **13 项**；
 3. 接上 CI，让"再变空"这件事**在测试里就暴露，而不是在日报里才被发现**。
 
-13 项现在仍可复跑验证：仓库根目录执行 `python -m unittest discover -s tests`，
-输出 `Ran 13 tests ... OK`（2026-11-02 陌生人复验实跑确认）。
+测试现在仍可复跑验证：仓库根目录执行 `python -m unittest discover -s tests`，
+当前输出 `Ran 17 tests ... OK`（2026-11-02 陌生人复验时为 13 项；43-batch 增补 4 项关键路径：
+HN JSON 源解析、`.000Z` 毫秒日期回归、fetch 全失败路径、无标题帖跳过，全部离线可跑）。
+
+### 五分钟复现（从 clone 到看到效果）
+
+```bash
+git clone https://github.com/gangrenboqe/ai-daily-collector.git && cd ai-daily-collector
+python -m unittest discover -s tests       # 17 项离线全绿（不需要网络）
+python ai_daily_scraper.py --print         # 真抓 6 个源（需网络），Markdown 直接打到屏幕
+python ai_daily_scraper.py                 # 同样的内容写入 daily/YYYY-MM-DD-ai.md
+```
+（2026-11-09 实测：`--print` 真实抓取成功，退出码 0；源可用性每日波动，失败源会如实列在输出里。）
 
 > 本节初稿由 AI 助手从提交历史中整理。按"写的人不审自己"的规矩，
 > 它会先经另一位独立 AI 助手复核，再由设计者推送发布。

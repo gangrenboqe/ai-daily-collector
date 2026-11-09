@@ -7,6 +7,7 @@ ai_daily_scraper 的单元测试（v2 · 零依赖版）
 跑：python -m unittest discover -s tests -v
 """
 
+import json
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -137,6 +138,41 @@ class TestCaps(unittest.TestCase):
     def test_only_arxiv_disables_ssl(self):
         nossl = [f["name"] for f in ads.FEEDS if f["verify_nossl"]]
         self.assertEqual(nossl, ["arXiv cs.AI"], "关证书校验的源必须只有 arXiv 一个")
+
+
+class TestJsonFeedAndQuietPaths(unittest.TestCase):
+    """43-batch 关键路径补测：parse_json_feed（HN 源）此前零测试——
+    JSON 字段一变它会静默返回 0 条，源在日报里显示「成功」却永远空。"""
+
+    def test_json_hits_parsed(self):
+        raw = json.dumps({"hits": [
+            {"title": "Show HN: 本地检索工具", "url": "https://example.com/a",
+             "points": 42, "num_comments": 7, "created_at": "2026-11-09T01:00:00Z"},
+            {"title": "无链接帖", "objectID": "45678",
+             "points": 3, "num_comments": 1, "created_at": "2026-11-09T02:00:00Z"},
+            {"title": "", "url": "https://example.com/b"},   # 无标题必须跳过
+        ]})
+        items = ads.parse_json_feed(raw)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["link"], "https://example.com/a")
+        self.assertIn("42 分", items[0]["summary"])
+        self.assertEqual(items[1]["link"],
+                         "https://news.ycombinator.com/item?id=45678")  # 无 url 落 HN 链接
+
+    def test_json_malformed_returns_empty_not_crash(self):
+        self.assertEqual(ads.parse_json_feed("<html>反爬页</html>"), [])
+
+    def test_iso8601_millis_variant(self):
+        """v2 实测修过：部分源给 2026-11-09T01:00:00.000Z，靠去掉 .000 再解析。
+        这个变体是历史上真踩过的坑，必须有回归。"""
+        dt = ads._parse_date_str("2026-11-09T01:00:00.000Z")
+        self.assertIsNotNone(dt)
+        self.assertEqual((dt.year, dt.month, dt.day), (2026, 11, 9))
+
+    def test_fetch_all_openers_fail_raises_runtimeerror(self):
+        """两个 opener 都失败 → RuntimeError（不是静默返回空），上层才能把源记为失败。"""
+        with self.assertRaises(RuntimeError):
+            ads.fetch("file://不存在的协议路径", timeout=1)
 
 
 if __name__ == "__main__":
