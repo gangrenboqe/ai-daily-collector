@@ -184,3 +184,9 @@ v2 重写后**克隆下来直接 `python ai_daily_scraper.py` 就能跑，不用
   所以下游必须容忍"部分源失败"，**不能把「抓不到」当成「今天没新闻」**。
 - 依赖源站的 RSS 可用性；源站改版或限流会导致某些源抓不到（脚本会跳过，不会崩）。
 - 不做去重与正文抽取，只做标题 / 链接 / 摘要级别的聚合。
+
+## 许可证
+
+自 2026-11-13 起的版本适用 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)：可自由用于个人学习、研究、试验与非商业用途，**不得用于商业目的**。此前发布的版本适用 MIT。
+
+Required Notice: Copyright 2026 谢一竹 (https://github.com/gangrenboqe)
